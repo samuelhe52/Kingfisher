@@ -708,15 +708,6 @@ public class KingfisherManager: @unchecked Sendable {
             )
             taskCreatedReporter.report(task)
 
-
-            // The code below is neat, but it fails the Swift 5.2 compiler with a runtime crash when 
-            // `BUILD_LIBRARY_FOR_DISTRIBUTION` is turned on. I believe it is a bug in the compiler. 
-            // Let's fallback to a traditional style before it can be fixed in Swift.
-            //
-            // https://github.com/onevcat/Kingfisher/issues/1436
-            //
-            // return task.map(DownloadTask.WrappedTask.download)
-
             if task.isInitialized {
                 return .download(task)
             } else {
@@ -903,6 +894,45 @@ public class KingfisherManager: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    /// Returns the result for an image in the target memory cache, when it can be delivered at once.
+    ///
+    /// It follows the rules of the target cache hit in `deliverTargetCacheHit`, but never processes an image. It
+    /// returns `nil` when the normal retrieving flow is necessary: on a cache miss, when `forceRefresh` is set, when
+    /// the cached image must be processed again before it is delivered, or when the target cache is a subclass.
+    func retrieveImageInMemoryCacheSynchronously(
+        with source: Source,
+        options: KingfisherParsedOptionsInfo
+    ) -> RetrieveImageResult?
+    {
+        guard !options.forceRefresh, !options.cacheSerializer.originalDataUsed else {
+            return nil
+        }
+        let targetCache = options.targetCache ?? cache
+        // Preserve custom cache retrieval overrides. The normal flow calls them.
+        guard type(of: targetCache) == ImageCache.self,
+              var image = targetCache.retrieveImageInMemoryCache(forKey: source.cacheKey, options: options)
+        else {
+            return nil
+        }
+        // An animated image created with other options must be created again.
+        // https://github.com/onevcat/Kingfisher/issues/1923
+        if image.kf.imageFrameCount != nil && image.kf.imageFrameCount != 1,
+           options.imageCreatingOptions != image.kf.imageCreatingOptions
+        {
+            return nil
+        }
+        if let modifier = options.imageModifier {
+            image = modifier.modify(image)
+        }
+        return RetrieveImageResult(
+            image: image,
+            cacheType: .memory,
+            source: source,
+            originalSource: source,
+            data: { [image] in options.cacheSerializer.data(with: image, original: nil) }
+        )
     }
 
     private func deliverTargetCacheHit(

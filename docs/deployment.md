@@ -22,16 +22,15 @@ The deployment process is fully automated using Fastlane with comprehensive plat
 **Configuration File**: `/Users/onevcat/Sync/github/Kingfisher/Kingfisher.podspec`
 
 **Build Targets**:
-- iOS 13.0+
-- macOS 10.15+
-- tvOS 13.0+
-- watchOS 6.0+
+- iOS 15.0+
+- macOS 12.0+
+- tvOS 15.0+
+- watchOS 9.0+
 - visionOS 1.0+
 
 **Key Features**:
 - Module stability enabled (`BUILD_LIBRARY_FOR_DISTRIBUTION`)
 - Privacy manifest included (`PrivacyInfo.xcprivacy`)
-- Weak framework dependencies (SwiftUI, Combine)
 - Required frameworks (CFNetwork, Accelerate)
 
 ### Swift Package Manager
@@ -46,10 +45,11 @@ The deployment process is fully automated using Fastlane with comprehensive plat
 - Privacy manifest resource: `Sources/PrivacyInfo.xcprivacy`
 
 **Platform Support**:
-- iOS 13.0+
-- macOS 10.15+
-- tvOS 13.0+
-- watchOS 6.0+
+- iOS 15.0+
+- macOS 12.0+
+- tvOS 15.0+
+- watchOS 9.0+
+- visionOS 1.0+
 
 ### XCFramework Distribution
 
