@@ -707,6 +707,7 @@ public class KingfisherManager: @unchecked Sendable {
                     originalCache.removeImage(
                         forKey: source.cacheKey,
                         processorIdentifier: DefaultImageProcessor.default.identifier,
+                        forcedExtension: options.forcedExtension,
                         callbackQueue: options.callbackQueue)
                     {
                         coordinator.apply(.cachingImage) {
@@ -735,6 +736,7 @@ public class KingfisherManager: @unchecked Sendable {
                         value.originalData,
                         forKey: source.cacheKey,
                         processorIdentifier: DefaultImageProcessor.default.identifier,
+                        forcedExtension: options.forcedExtension,
                         expiration: originalDiskExpiration,
                         callbackQueue: options.callbackQueue)
                     {
@@ -1869,7 +1871,9 @@ private struct DownloadTaskReportingModifier: ImageDownloadRequestModifier {
     }
 
     func modified(for request: URLRequest) -> URLRequest? {
-        base?.modified(for: request) ?? request
+        // A `nil` from the base modifier interrupts the download. Only a missing base keeps the request as it is.
+        guard let base else { return request }
+        return base.modified(for: request)
     }
 }
 

@@ -2269,6 +2269,33 @@ class KingfisherManagerTests: XCTestCase {
         )
     }
     
+    func testCacheOriginalImageWithForcedExtensionIsReusedByAnotherProcessor() async throws {
+        let url = URL(string: "https://example.com/forced-extension-cache-original")!
+        stub(url, data: testImageData)
+
+        let options: KingfisherOptionsInfo = [.cacheOriginalImage, .forcedCacheFileExtension("heic")]
+        let first = RoundCornerImageProcessor(cornerRadius: 20)
+        var result = try await manager.retrieveImage(with: url, options: options + [.processor(first)])
+        XCTAssertEqual(result.cacheType, .none)
+
+        // The original is stored under the forced extension, which is where the original cache lookup searches.
+        XCTAssertEqual(manager.cache.imageCachedType(forKey: url.cacheKey, forcedExtension: "heic"), .disk)
+
+        // Another processor is then served from the cached original, without downloading again.
+        manager.cache.clearMemoryCache()
+        LSNocilla.sharedInstance().clearStubs()
+        let second = RoundCornerImageProcessor(cornerRadius: 40)
+        result = try await manager.retrieveImage(with: url, options: options + [.processor(second)])
+        XCTAssertEqual(result.cacheType, .none)
+        XCTAssertTrue(
+            manager.cache.imageCachedType(
+                forKey: url.cacheKey,
+                processorIdentifier: second.identifier,
+                forcedExtension: "heic"
+            ).cached
+        )
+    }
+
     // MARK: - Async cache-type check (issue #2512)
 
     func testRetrieveImageWithAsyncCacheTypeCheckAcrossCacheStates() {
@@ -2309,6 +2336,25 @@ class KingfisherManagerTests: XCTestCase {
 
         runStep(0)
         waitForExpectations(timeout: 3, handler: nil)
+    }
+
+    // A request modifier that returns `nil` interrupts the download with `.emptyRequest`, as it does when the
+    // downloader is used directly (`ImageDownloaderTests.testDownloadWithModifyingRequestToNil`).
+    func testRetrieveImageWithModifyingRequestToNil() {
+        let exp = expectation(description: #function)
+        let url = testURLs[0]
+        stub(url, data: testImageData)
+
+        let nilModifier = AnyModifier { _ in nil }
+        manager.retrieveImage(with: url, options: [.requestModifier(nilModifier)]) { result in
+            XCTAssertNil(result.value, "The download should not start when the modifier returns nil.")
+            if case .requestError(reason: .emptyRequest) = result.error {
+            } else {
+                XCTFail("Expected an emptyRequest error, got \(result)")
+            }
+            exp.fulfill()
+        }
+        waitForExpectations(timeout: 3)
     }
 
     func testRetrieveImageWithAsyncCacheTypeCheckReturnsCancellableShellOnMiss() {
@@ -2452,6 +2498,61 @@ class KingfisherManagerTests: XCTestCase {
         task?.cancel()
         _ = delayedResponse.go()
         wait(for: [completionExp], timeout: 2)
+    }
+
+    func testRetrieveImageWithAsyncCacheTypeCheckCancelsImmediately() {
+        let completionExp = expectation(description: "\(#function) completion")
+        let url = testURLs[0]
+        stub(url, data: testImageData)
+
+        let task = manager.retrieveImage(
+            with: url,
+            options: [.asyncCacheTypeCheck]
+        ) { result in
+            guard let error = result.error else {
+                XCTFail("cancelling the shell immediately should cancel the load, but got success: \(String(describing: result.value))")
+                completionExp.fulfill()
+                return
+            }
+            XCTAssertTrue(error.isTaskCancelled, "Expected isTaskCancelled error but got: \(error)")
+            completionExp.fulfill()
+        }
+
+        XCTAssertNotNil(task)
+        task?.cancel()
+
+        wait(for: [completionExp], timeout: 3)
+    }
+
+    // The manager shell is linked to the downloader shell, which is linked to the session task later. A cancellation
+    // before any link happens must reach the session task through both shells.
+    func testRetrieveImageWithAsyncCacheTypeCheckAndAsyncModifierCancelsImmediately() {
+        let completionExp = expectation(description: "\(#function) completion")
+        let requestHeld = expectation(description: "\(#function) request held")
+        let url = testURLs[0]
+        stub(url, data: testImageData)
+
+        let modifier = GatedRequestModifier(onFirstRequestHeld: { requestHeld.fulfill() })
+        let task = manager.retrieveImage(
+            with: url,
+            options: [.asyncCacheTypeCheck, .requestModifier(modifier)]
+        ) { result in
+            guard let error = result.error else {
+                XCTFail("cancelling nested shells before they are linked should cancel the load, but got success")
+                completionExp.fulfill()
+                return
+            }
+            XCTAssertTrue(error.isTaskCancelled, "Expected isTaskCancelled error but got: \(error)")
+            completionExp.fulfill()
+        }
+
+        XCTAssertNotNil(task)
+        wait(for: [requestHeld], timeout: 3)
+        XCTAssertFalse(task?.isInitialized ?? true)
+        task?.cancel()
+        modifier.release()
+
+        wait(for: [completionExp], timeout: 3)
     }
 
     // A finished download must release its session task while the manager and its downloader stay alive. The
@@ -2725,6 +2826,37 @@ class KingfisherManagerTests: XCTestCase {
             XCTAssertNotNil(result.value?.image)
 
         manager.retrieveImage(with: url, options: options + [.onlyFromCache]) { result in
+            XCTAssertNotNil(result.error)
+            exp.fulfill()
+        }}}
+        waitForExpectations(timeout: 3, handler: nil)
+    }
+
+    func testRespectCacheControlNoStoreRemovesCachedOriginalWithForcedExtension() {
+        let exp = expectation(description: #function)
+        let url = testURLs[0]
+        stub(url, data: testImageData)
+
+        let manager = self.manager!
+        let options: KingfisherOptionsInfo = [
+            .respectCacheControl, .forcedCacheFileExtension("jpg"), .cacheOriginalImage
+        ]
+        let first = RoundCornerImageProcessor(cornerRadius: 20)
+        manager.retrieveImage(with: url, options: options + [.processor(first)]) { result in
+            XCTAssertEqual(result.value!.cacheType, .none)
+            XCTAssertEqual(manager.cache.imageCachedType(forKey: url.cacheKey, forcedExtension: "jpg"), .disk)
+
+        // The original was stored under the forced extension; the `no-store` removal has to target the same file.
+        LSNocilla.sharedInstance().clearStubs()
+        stub(url, data: testImageData, headers: ["Cache-Control": "no-store"])
+        manager.retrieveImage(
+            with: url, options: options + [.processor(first), .forceRefresh, .waitForCache]
+        ) { result in
+            XCTAssertNotNil(result.value?.image)
+
+        // Another processor cannot be served from the removed original.
+        let second = RoundCornerImageProcessor(cornerRadius: 40)
+        manager.retrieveImage(with: url, options: options + [.processor(second), .onlyFromCache]) { result in
             XCTAssertNotNil(result.error)
             exp.fulfill()
         }}}
